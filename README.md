@@ -1,6 +1,6 @@
 # ModchartBackend for Friday Night Funkin'
 
-ModchartBackend is a work-in-progress Friday Night Funkin' mod which aims to easily allow the creation of dynamic strumline effects. Heavily inspired by [NotITG](https://www.noti.tg/) and similar FNF projects, ModchartBackend aims to allow control over the playfield using a collection effect modifiers.
+ModchartBackend is a work-in-progress Friday Night Funkin' V-Slice mod which aims to easily allow the creation of dynamic strumline effects. Heavily inspired by [NotITG](https://www.noti.tg/) and similar FNF projects, ModchartBackend aims to allow control over the playfield using a collection effect modifiers.
 
 This project uses the Funkin Compiler VSCode extension! To compile the source code, check out the extension's [page on the Funkin Coobook](https://thekade.net/funkin-cookbook/category/community/03.funkincompiler.html).
 
