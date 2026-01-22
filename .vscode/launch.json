@@ -5,12 +5,14 @@
       "type": "funkin-run-game",
       "request": "launch",
       "name": "Compile & Run FNF mod",
+      "cmd_prefix": "Funkin",
       "preLaunchTask": "Funk: Compile current V-Slice mod"
     },
     {
       "type": "funkin-run-game",
       "request": "launch",
       "name": "Just run FNF",
+      "cmd_prefix": "Funkin",
       "preLaunchTask": ""
     }
   ]
