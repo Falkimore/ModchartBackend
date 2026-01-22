@@ -1,0 +1,595 @@
+package modchart;
+
+import Main;
+import flixel.FlxG;
+import flixel.math.FlxMath;
+import flixel.math.FlxPoint;
+import flixel.tweens.FlxEase;
+import funkin.Conductor;
+import funkin.Preferences;
+import funkin.modding.module.Module;
+import funkin.play.PlayState;
+import funkin.play.notes.Strumline;
+import funkin.play.notes.notestyle.NoteStyle;
+import funkin.util.Constants;
+import funkin.util.GRhythmUtil;
+import haxe.ds.StringMap;
+import lime.math.Vector4;
+
+/**
+ * Be wary when using this, as it's currently not finished!
+ *
+ * This class aids in creating modcharts.
+ */
+class ModchartBackend extends Module
+{
+  /**
+   * Mod order constants
+   */
+  var FIRST = -1000;
+
+  var PRE_REVERSE = -3;
+  var REVERSE = -2;
+  var POST_REVERSE = -1;
+  var DEFAULT = 0;
+  var LAST = 1000;
+
+  /**
+   * Whether or not a PlayState instance is currently running.
+   */
+  private var inPlay:Bool = false;
+
+  /**
+   * The current PlayState instance, if there is one.
+   */
+  private var instance:Null<PlayState> = null;
+
+  private var songPlaying:Bool = false;
+
+  /**
+   * Variables used to track whether the backend has been initialized/cleaned up.
+   */
+  private var initialized:Bool = false;
+
+  private var cleanedUp:Bool = true;
+
+  /**
+   * An array which stores the default scales of the strumline notes.
+   */
+  private var defaultScales:Array<Array<FlxBasePoint>> = [];
+
+  private var registry:StringMap<{}> = [
+    // Y offset modifiers
+    "wave" =>
+    {
+      name: "wave",
+      defaultVal: 0
+    },
+    "boost" =>
+    {
+      name: "boost",
+      defaultVal: 0,
+      submodMap: ["boostHeight" => 500]
+    },
+    "brake" =>
+    {
+      name: "brake",
+      defaultVal: 0,
+      submodMap: ["brakeHeight" => 500]
+    },
+    // Position modifiers
+    "tornado" =>
+    {
+      name: "tornado",
+      defaultVal: 0
+    },
+    /*
+      "dizzy" => {
+          name : "dizzy",
+          defaultVal : 0,
+          getPos : (pos:Vector4, yOffset:Float, column:Int, curBeat:Float, m:StringMap<Float>) -> {
+              return pos;
+          },
+          order : PRE_REVERSE
+      },
+     */
+    "drunk" =>
+    {
+      name: "drunk",
+      defaultVal: 0
+    },
+    "tipsy" =>
+    {
+      name: "tipsy",
+      defaultVal: 0
+    },
+    "xpos" =>
+    {
+      name: "xpos",
+      defaultVal: 0,
+      submods: [for (i in 0...4) "xpos" + i]
+    },
+    "ypos" =>
+    {
+      name: "ypos",
+      defaultVal: 0,
+      submods: [for (i in 0...4) "ypos" + i]
+    },
+    "flip" =>
+    {
+      name: "flip",
+      defaultVal: 0
+    },
+    "invert" =>
+    {
+      name: "invert",
+      defaultVal: 0
+    },
+    "beat" =>
+    {
+      name: "beat",
+      defaultVal: 0,
+      submodMap: ["beatAccel" => 0.3, "beatTime" => 0.7]
+    }
+  ];
+
+  /**
+   * Mod values per player
+   */
+  private var modValues:Array<StringMap<Float>> = [];
+
+  public function new()
+  {
+    super("ModchartManager");
+    // Main.fpsCounter.x =  Main.memoryCounter.x = FlxG.width * 0.5;
+  }
+
+  /**
+   * Runs when a PlayState instance has been loaded.
+   */
+  private function initialize()
+  {
+    if (initialized)
+    {
+      return;
+    }
+
+    trace("Initializing modchart backend...");
+
+    instance.opponentStrumline.customPositionData = true;
+    instance.playerStrumline.customPositionData = true;
+
+    // Get strumline scales
+    pushStrumlineScales(instance.opponentStrumline, 0);
+    pushStrumlineScales(instance.playerStrumline, 1);
+
+    resetMods();
+
+    // Make sure that this function only runs once
+    initialized = true;
+    cleanedUp = false;
+  }
+
+  private function resetMods()
+  {
+    // get mods per player
+    modValues = [];
+    for (plr in 0...2)
+    {
+      var modMap = new StringMap();
+      // hscript doesn't have key-value iterators as far as i can tell
+      for (key in registry.keys())
+      {
+        var mod = registry.get(key);
+        modMap.set(key, mod.defaultVal);
+
+        if (mod.submods != null)
+        {
+          for (submod in mod.submods)
+          {
+            modMap.set(submod, mod.defaultVal);
+          }
+        }
+        if (mod.submodMap != null)
+        {
+          trace(mod.submodMap);
+          for (submod in mod.submodMap.keys())
+          {
+            modMap.set(submod, mod.submodMap.get(submod));
+          }
+        }
+      }
+      modValues[plr] = modMap;
+    }
+    trace(modValues);
+
+    setMod("drunk", 0.5);
+    setMod("boost", 0.4);
+    setMod("beat", 1);
+    setMod("tipsy", 0.5);
+    setMod("tornado", 0.15);
+    setMod("wave", 1);
+  }
+
+  /**
+   * Runs when the current PlayState instance has been destroyed.
+   */
+  private function cleanUp()
+  {
+    if (cleanedUp)
+    {
+      return;
+    }
+
+    trace("Cleaning up modchart backend...");
+
+    // Recycle points used for storing strum scales
+    for (scaleArray in defaultScales)
+    {
+      for (point in scaleArray)
+      {
+        point.put();
+      }
+    }
+    scaleArray = [];
+
+    modValues = [];
+
+    // Make sure that this function only runs once
+    initialized = false;
+    cleanedUp = true;
+
+    songPlaying = false;
+  }
+
+  /**
+   * Gets the scales of the strums and adds them to the `defaultScales` array.
+   * @param strumline The strumline to get the scales from.
+   * @param player A number denoting the player this strumline is associated with. (0 = opponent, 1 = bf)
+   */
+  private function pushStrumlineScales(strumline:Strumline, player:Int)
+  {
+    var scales:Array<FlxBasePoint> = [];
+    for (strumNote in strumline.strumlineNotes.members)
+    {
+      scales.push(FlxPoint.get(strumNote.scale.x, strumNote.scale.y));
+    }
+    defaultScales[player] = scales;
+  }
+
+  function setMod(modName:String, value:Float, player:Null<Int>)
+  {
+    if (player == null || player == -1)
+    {
+      setMod(modName, value, 0);
+      setMod(modName, value, 1);
+    }
+    else
+    {
+      modValues[player].set(modName, value);
+    }
+  }
+
+  private function getPosition(pos:Vector4, yOffset:Float, column:Int, player:Int)
+  {
+    var m = modValues[player];
+    var curBeat = Conductor.instance.currentBeatTime;
+    pos.setTo(0, 0, 0);
+
+    if (m.get("tornado") != 0.0)
+    {
+      var rads = Math.acos((column - 1.5) / 1.5) + yOffset * 6 / 720;
+      var offset = (Math.cos(rads) + 1) * 1.5 * Strumline.NOTE_SPACING - column * Strumline.NOTE_SPACING;
+      pos.x += m.get("tornado") * offset;
+    }
+
+    if (m.get("drunk") != 0.0)
+    {
+      var value = Math.cos(Conductor.instance.songPosition / Constants.MS_PER_SEC + (column + 1) * 0.2 + yOffset * (10 / 720)) * Strumline.STRUMLINE_SIZE * 0.5;
+      pos.x += m.get("drunk") * value;
+    }
+
+    if (m.get("tipsy") != 0.0)
+    {
+      var value = Math.cos(Conductor.instance.songPosition / Constants.MS_PER_SEC * 1.2 + (column) * 2.0 + 0.2) * Strumline.STRUMLINE_SIZE * 0.4;
+      pos.y += m.get("tipsy") * value;
+    }
+
+    pos.x += m.get("xpos") + m.get("xpos" + column);
+
+    pos.y += m.get("ypos") + m.get("ypos" + column);
+
+    if (m.get("flip") != 0.0)
+    {
+      pos.x += m.get("flip") * (Strumline.NOTE_SPACING * 2 * (1.5 - column));
+    }
+
+    if (m.get("invert") != 0.0)
+    {
+      pos.x += m.get("invert") * (Strumline.NOTE_SPACING * (column % 2 == 0 ? 1 : -1));
+    }
+
+    if (m.get("beat") != 0.0)
+    {
+      var accelTime:Float = m.get("beatAccel");
+      var totalTime:Float = m.get("beatTime");
+
+      curBeat += accelTime;
+
+      var evenBeat:Bool = Math.floor(curBeat) % 2 == 0;
+
+      curBeat -= Math.floor(curBeat);
+      curBeat += 1;
+      curBeat -= Math.floor(curBeat);
+
+      var shift = 0;
+
+      if (curBeat < totalTime)
+      {
+        var amount:Float = 0;
+
+        if (curBeat < accelTime)
+        {
+          amount = FlxMath.remapToRange(curBeat, 0, accelTime, 0, 1);
+          amount *= amount;
+        }
+        else
+        {
+          amount = FlxMath.remapToRange(curBeat, accelTime, totalTime, 1, 0);
+          amount = 1 - (1 - amount) * (1 - amount);
+        }
+
+        if (evenBeat)
+        {
+          amount *= -1;
+        }
+
+        shift = 40 * amount * Math.sin(yOffset / 30 + Math.PI * 0.5);
+        pos.x += m.get("beat") * shift;
+      }
+    }
+
+    return pos;
+  }
+
+  public function calculateNoteYPos(strumTime:Float, scrollSpeed:Float, ?conductorInUse:Conductor = null, column:Int, player:Int):Float
+  {
+    var m = modValues[player];
+
+    var yOffset = GRhythmUtil.getNoteY(strumTime, scrollSpeed, false, conductorInUse);
+
+    if (m.get("wave") != 0.0)
+    {
+      yOffset += m.get("wave") * 20 * Math.sin((yOffset + 250) / 76);
+    }
+
+    if (m.get("boost") != 0.0)
+    {
+      var height = m.get("boostHeight");
+      var scale = 1.5 / ((yOffset + height / 1.2) / height);
+      var newYOffset = yOffset * scale;
+      var adjust = m.get("boost") * (newYOffset - yOffset);
+
+      adjust = FlxMath.bound(adjust, -400, 400);
+      yOffset += adjust;
+    }
+
+    if (m.get("brake") != 0.0)
+    {
+      var height = m.get("brakeHeight");
+      var scale = FlxMath.remapToRange(yOffset, 0, height, 0, 1);
+      var newYOffset = yOffset * scale;
+      var adjust = m.get("brake") * (newYOffset - yOffset);
+
+      adjust = FlxMath.bound(adjust, -400, 400);
+      yOffset += adjust;
+    }
+
+    return yOffset;
+  }
+
+  /**
+   * Updates the positions of a strumlines notes to match the positions of its strums.
+   * @param strumline The strumline to update.
+   * @param player A number denoting the player this strumline is associated with. (0 = opponent, 1 = bf)
+   */
+  function updateStrumline(strumline:Strumline, player:Int)
+  {
+    var conductorInUse = strumline.conductorInUse;
+    var noteStyle = strumline.noteStyle;
+
+    var downscrollFlip:Int = (strumline.isDownscroll) ? -1 : 1;
+
+    var positions = new Vector4();
+
+    for (strumNote in strumline.strumlineNotes.members)
+    {
+      // Reset strum properties.
+      positions = getPosition(positions, 0, strumNote.direction, player);
+      strumNote.x = strumline.x + strumline.getXPos(strumNote.direction) + Strumline.INITIAL_OFFSET + positions.x;
+      strumNote.y = strumline.y + positions.y * downscrollFlip;
+      noteStyle.applyStrumlineOffsets(strumNote);
+      strumNote.scale.x = defaultScales[player][strumNote.direction].x;
+      strumNote.scale.y = defaultScales[player][strumNote.direction].y;
+    }
+
+    // CODE I BORROWED AND MODIFIED FROM Strumline.hx:
+
+    // Update rendering of notes.
+    for (note in strumline.notes.members)
+    {
+      if (note == null || !note.alive) continue;
+
+      applyNoteScale(noteStyle, note);
+
+      var yOffset = calculateNoteYPos(note.strumTime, strumline.scrollSpeed, conductorInUse, note.direction, player);
+      positions = getPosition(positions, yOffset, note.direction, player);
+      note.x = strumline.x + strumline.getXPos(note.direction) - Strumline.NUDGE + positions.x;
+      note.y = strumline.y - Strumline.INITIAL_OFFSET + (yOffset + positions.y) * downscrollFlip;
+      // note.angle += positions[2];
+    }
+
+    // Update rendering of hold notes.
+    // TODO: remake this code to use the modern hold note rendering
+    for (holdNote in strumline.holdNotes.members)
+    {
+      if (holdNote == null || !holdNote.alive) continue;
+
+      holdNote.x = strumline.x + strumline.getXPos(holdNote.noteDirection) + (Strumline.STRUMLINE_SIZE - holdNote.width) / 2;
+      holdNote.y = strumline.y - Strumline.INITIAL_OFFSET + Strumline.STRUMLINE_SIZE / 2;
+
+      var yOffset = 0;
+
+      if (holdNote.missedNote && (holdNote.fullSustainLength > holdNote.sustainLength))
+      {
+        // Hold note was dropped before completing, keep it in its clipped state.
+        yOffset = calculateNoteYPos(holdNote.strumTime, strumline.scrollSpeed, conductorInUse, holdNote.direction, player);
+        if (!strumline.isDownscroll)
+        {
+          holdNote.y += (holdNote.fullSustainLength - holdNote.sustainLength) * Constants.PIXELS_PER_MS;
+        }
+      }
+      else if (conductorInUse.songPosition > holdNote.strumTime && holdNote.hitNote)
+      {
+        // Hold note is currently being hit, clip it off.
+      }
+      else
+      {
+        // Hold note is new, render it normally.
+        yOffset = calculateNoteYPos(holdNote.strumTime, strumline.scrollSpeed, conductorInUse, holdNote.direction, player);
+      }
+
+      if (strumline.downscroll)
+      {
+        holdNote.y -= holdNote.height;
+      }
+
+      positions = getPosition(positions, yOffset, holdNote.noteDirection, player);
+      holdNote.x += positions.x;
+      holdNote.y += (yOffset + positions.y) * downscrollFlip;
+
+      if (holdNote.cover != null)
+      {
+        updateHoldNoteCover(strumline, holdNote, positions);
+      }
+      // note.angle += positions[2];
+
+      // holdNote.scale.x = strumlineNotes[holdNote.direction].scale.x;
+    }
+  }
+
+  function updateHoldNoteCover(strumline:Strumline, holdNote:SustainTrail, pos:Vector4)
+  {
+    var cover:NoteHoldCover = holdNote.cover;
+
+    cover.x = strumline.x;
+    cover.x += strumline.getXPos(holdNote.noteDirection) + pos.x;
+    cover.x += Strumline.STRUMLINE_SIZE / 2;
+    cover.x -= cover.width / 2;
+    cover.x += strumline.noteStyle.getHoldCoverOffsets()[0] * cover.scale.x;
+    cover.x += -12; // hardcoded adjustment, because we are evil.
+
+    cover.y = strumline.y;
+    cover.y += pos.y;
+    cover.y += Strumline.INITIAL_OFFSET;
+    cover.y += Strumline.STRUMLINE_SIZE / 2;
+    cover.y += strumline.noteStyle.getHoldCoverOffsets()[1] * cover.scale.y;
+    cover.y += -96; // hardcoded adjustment, because we are evil.
+  }
+
+  /**
+   * Applies a notestyle's specified note scale onto a sprite.
+   * @param style The style to use.
+   * @param target The sprite that the scale should be applied to.
+   */
+  function applyNoteScale(style:NoteStyle, target:FlxSprite)
+  {
+    target.scale.x = style._data.assets.note.scale;
+    target.scale.y = style._data.assets.note.scale;
+
+    target.setGraphicSize(Strumline.STRUMLINE_SIZE);
+    target.updateHitbox();
+  }
+
+  /**
+   * Because an offset is applied to the strums, we have to apply an offset to the notes
+   * to get rid of any alignment issues.
+   * @param style The style to use.
+   * @param target The sprite that the offsets should be applied to.
+   */
+  function applyInverseOffsets(style:NoteStyle, target:FlxSprite)
+  {
+    target.x -= style._data.assets.noteStrumline.offsets[0];
+    target.y -= style._data.assets.noteStrumline.offsets[1];
+  }
+
+  /**
+   * Checks if there is a PlayState instance currently active.
+   * Also updates the `instance` variable and runs the `initialize()` function.
+   */
+  private function checkInPlay()
+  {
+    instance = PlayState.instance;
+    inPlay = instance != null;
+    if (inPlay)
+    {
+      initialize();
+    }
+    else
+    {
+      cleanUp();
+    }
+  }
+
+  override public function onUpdate(event:UpdateScriptEvent)
+  {
+    if (inPlay && initialized && !instance.isGamePaused)
+    {
+      // Update the strumlines!
+      updateStrumline(instance.opponentStrumline, 0);
+      updateStrumline(instance.playerStrumline, 1);
+    }
+  }
+
+  override public function onSongLoaded(event:SongLoadScriptEvent)
+  {
+    checkInPlay();
+  }
+
+  override public function onDestroy(event:ScriptEvent)
+  {
+    cleanUp();
+  }
+
+  override public function onStateChangeBegin(event:StateChangeScriptEvent)
+  {
+    // If we're changing from PlayState, then clean everything up
+    if (inPlay)
+    {
+      cleanUp();
+    }
+  }
+
+  override public function onSongStart(event:ScriptEvent)
+  {
+    songPlaying = true;
+  }
+
+  override public function onSongEnd(event:ScriptEvent)
+  {
+    songPlaying = false;
+  }
+
+  override public function onGameOver(event:ScriptEvent)
+  {
+    songPlaying = false;
+  }
+
+  override public function onSongRetry(event:ScriptEvent)
+  {
+    resetMods();
+    updateStrumline(instance.opponentStrumline, 0);
+    updateStrumline(instance.playerStrumline, 1);
+    songPlaying = false;
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "title": "Modchart Backend",
+  "description": "Enables the creation of modcharts.",
+  "contributors": [
+    {
+      "name": "Izzee / Falkimore",
+      "role": "Programmer"
+    }
+  ],
+  "api_version": "0.8.0",
+  "mod_version": "0.0.0",
+  "license": "Apache-2.0"
+}
